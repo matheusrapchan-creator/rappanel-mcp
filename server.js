@@ -75,6 +75,10 @@ function formatMovimentacao(item) {
   return `${item.id}. ${item.tipo} - ${nome} - ${Number(item.quantidade || 0).toLocaleString("pt-BR")} ${item.unidade || ""}${item.projeto_id ? ` - projeto #${item.projeto_id}` : ""}${item.motivo ? ` - ${item.motivo}` : ""}`;
 }
 
+function formatRecebimento(item) {
+  const vencimento = item.vencimento ? ` - venc. ${item.vencimento}` : "";
+  return `${item.id}. ${item.cliente || "Sem cliente"} - ${formatMoney(item.valor)} - ${item.status || "a receber"}${vencimento}${item.observacao ? ` - ${item.observacao}` : ""}`;
+}
 function formatDetalhamento(item) {
   const rows = Array.isArray(item.detalhamento) ? item.detalhamento : [];
   if (!rows.length) return "Sem detalhamento de margem.";
@@ -175,6 +179,20 @@ const movimentacaoProperties = {
   observacao: { type: "string", description: "Observações adicionais" },
 };
 
+const recebimentoProperties = {
+  id: idProperty("ID do recebimento"),
+  cliente: { type: "string", description: "Nome de quem deve pagar" },
+  valor: { type: "number", description: "Valor a receber em reais" },
+  status: { type: "string", description: "Status: a receber, cobrado, parcial, recebido, atrasado, cancelado" },
+  vencimento: { type: "string", description: "Data de vencimento no formato YYYY-MM-DD" },
+  origem: { type: "string", description: "Origem da cobranca, ex: agenda, orcamento, projeto, servico" },
+  agenda_id: idProperty("ID da agenda relacionada, se houver"),
+  orcamento_id: idProperty("ID do orcamento relacionado, se houver"),
+  projeto_id: idProperty("ID do projeto relacionado, se houver"),
+  cobrado_em: { type: "string", description: "Data/hora em que a cobranca foi feita, em ISO, se houver" },
+  recebido_em: { type: "string", description: "Data/hora em que recebeu, em ISO, se houver" },
+  observacao: { type: "string", description: "Observacoes do recebimento" },
+};
 const tool = (name, description, properties = {}, required = []) => ({
   name,
   description,
@@ -216,6 +234,11 @@ function setupMCPServer(server) {
       tool("delete_item_estoque", "Inativa um item do estoque pelo ID", { id: estoqueProperties.id }, ["id"]),
       tool("movimentar_estoque", "Registra entrada, saída ou ajuste de saldo de um item do estoque", movimentacaoProperties, ["produto_id", "tipo", "quantidade"]),
       tool("list_movimentacoes_estoque", "Lista as últimas movimentações de estoque"),
+      tool("list_recebimentos", "Lista cobrancas e valores a receber"),
+      tool("get_recebimento", "Consulta uma cobranca pelo ID", { id: recebimentoProperties.id }, ["id"]),
+      tool("create_recebimento", "Cria um valor a receber apos uma cobranca feita", recebimentoProperties, ["cliente", "valor"]),
+      tool("update_recebimento", "Atualiza uma cobranca, incluindo status de recebimento", recebimentoProperties, ["id"]),
+      tool("delete_recebimento", "Exclui um registro de recebimento pelo ID", { id: recebimentoProperties.id }, ["id"]),
     ],
   }));
 
@@ -353,6 +376,36 @@ function setupMCPServer(server) {
         return { content: [{ type: "text", text: `Movimentações de estoque (${lista.length}):\n\n${text}` }] };
       }
 
+
+      if (name === "list_recebimentos") {
+        const data = await apiRequest("/recebimentos");
+        const lista = Array.isArray(data) ? data : [];
+        const text = lista.length ? lista.map(formatRecebimento).join("\n") : "Nenhum recebimento cadastrado.";
+        const totalAberto = lista
+          .filter((item) => !["recebido", "cancelado"].includes(String(item.status || "").toLowerCase()))
+          .reduce((total, item) => total + Number(item.valor || 0), 0);
+        return { content: [{ type: "text", text: `Recebimentos (${lista.length}) | aberto: ${formatMoney(totalAberto)}\n\n${text}` }] };
+      }
+
+      if (name === "get_recebimento") {
+        const data = await apiRequest(`/recebimentos/${args.id}`);
+        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+      }
+
+      if (name === "create_recebimento") {
+        const data = await apiRequest("/recebimentos", { method: "POST", body: JSON.stringify({ status: "a receber", ...withoutId(args) }) });
+        return { content: [{ type: "text", text: `Recebimento cadastrado com sucesso.\n\n${formatRecebimento(data)}` }] };
+      }
+
+      if (name === "update_recebimento") {
+        const data = await apiRequest(`/recebimentos/${args.id}`, { method: "PATCH", body: JSON.stringify(withoutId(args)) });
+        return { content: [{ type: "text", text: `Recebimento atualizado com sucesso.\n\n${formatRecebimento(data)}` }] };
+      }
+
+      if (name === "delete_recebimento") {
+        const data = await apiRequest(`/recebimentos/${args.id}`, { method: "DELETE" });
+        return { content: [{ type: "text", text: `Recebimento excluido com sucesso. ID: ${data.id}` }] };
+      }
       return {
         content: [{ type: "text", text: `Ferramenta desconhecida: ${name}` }],
         isError: true,
@@ -370,7 +423,7 @@ app.get("/sse", async (req, res) => {
   const connectionId = randomUUID();
 
   const server = new Server(
-    { name: "rappanel-mcp", version: "1.3.0" },
+    { name: "rappanel-mcp", version: "1.4.0" },
     { capabilities: { tools: {} } }
   );
 
@@ -405,7 +458,7 @@ app.get("/health", (req, res) => {
   res.json({
     status: "ok",
     service: "MCP RapPanel",
-    version: "1.3.0",
+    version: "1.4.0",
     connections: activeConnections.size,
     tools: [
       "list_agenda",
@@ -431,6 +484,11 @@ app.get("/health", (req, res) => {
       "delete_item_estoque",
       "movimentar_estoque",
       "list_movimentacoes_estoque",
+      "list_recebimentos",
+      "get_recebimento",
+      "create_recebimento",
+      "update_recebimento",
+      "delete_recebimento",
     ],
   });
 });
